@@ -115,7 +115,8 @@ export default class Core extends AwaitEventEmitter {
     }
 
     this.farm = WorkerFarm.getShared(this.options, {
-      workerPath: require.resolve('./worker')
+      workerPath: require.resolve('./worker'),
+      core: this
     });
 
     for (const entry of new Set(this.entryFiles)) {
@@ -131,6 +132,8 @@ export default class Core extends AwaitEventEmitter {
     logger.info(`编译耗时:${endTime.getTime() - startTime.getTime()}ms`);
 
     await this.emit('end-build');
+
+    this.farm.stopPref();
 
     if (!this.options.watch) {
       await this.stop();

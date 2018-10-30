@@ -2,19 +2,23 @@ import * as fs from 'fs-extra';
 import * as _ from 'lodash';
 import * as path from 'path';
 import * as URL from 'url';
-import { IAliasValue, IInitOptions } from '../typings/jgb-shared';
+import { IInitOptions } from '../typings/jgb-shared';
 import * as config from './config';
 import { logger } from './Logger';
 import { ICompiler } from './pluginDeclare';
 import Resolver from './Resolver';
 import SourceMap from './SourceMap';
-import { normalizeAlias, pathToUnixType, promoteRelativePath } from './utils';
+import { normalizeAlias, promoteRelativePath } from './utils';
+import { pathToUnixType } from './utils/index';
 import isUrl from './utils/isUrl';
 import objectHash from './utils/objectHash';
+import WorkerFarm from './workerfarm/WorkerFarm';
 
-const NODE_MODULES = 'node_modules';
+const DEFAULT_NPM_DIR = 'npm';
 
-const cache = new Map();
+const REG_NODE_MODULES = /(\/node_modules\/|\/npm\/)/g;
+
+const cache = new Map<string, string>();
 
 export interface IAssetGenerate {
   code: string;
@@ -47,7 +51,8 @@ export default class Asset {
   constructor(public name: string, public options: IInitOptions) {
     this.basename = path.basename(name);
     this.relativeName = path.relative(options.sourceDir, name);
-    this.resolver = new Resolver(options);
+    const resolver = WorkerFarm.getSharedResolver();
+    this.resolver = resolver || new Resolver(options);
   }
 
   invalidate() {
@@ -73,28 +78,6 @@ export default class Asset {
    * @param name
    */
   async resolveAliasName(name: string, ext: string = '') {
-    let distPath = '';
-    const alias = this.options.alias;
-
-    /**
-     * resolve alias get relativepath
-     * @example
-     *  @/utils/index => ../utils/index
-     */
-    if (alias) {
-      for (const key of Object.keys(alias)) {
-        if (name.includes(key)) {
-          const aliasValue = normalizeAlias(alias[key]);
-          name = path.normalize(name.replace(key, aliasValue.path));
-          const sourceFile = this.name;
-          const dependenceFile = name;
-          // relative path: ..\\utils\\index => ../utils/index
-          name = promoteRelativePath(path.relative(sourceFile, dependenceFile));
-          break;
-        }
-      }
-    }
-
     /** resolve relative path */
     const { path: absolutePath } = (await this.resolver.resolve(
       name,
@@ -107,7 +90,7 @@ export default class Asset {
     /** require相对引用路径 */
     let relativeRequirePath = '';
 
-    distPath = this.generateDistPath(absolutePath, ext);
+    const distPath = this.generateDistPath(absolutePath, ext);
     const parentDistPath = this.generateDistPath(this.name, ext);
 
     if (distPath && parentDistPath) {
@@ -118,7 +101,7 @@ export default class Asset {
 
     return {
       /* 文件真实路径 */
-      realName: name,
+      realName: absolutePath,
       distPath,
       absolutePath,
       /* require相对路径 */
@@ -218,6 +201,8 @@ export default class Asset {
         logger.log(`${distPath}`, '编译', endTime - startTime);
       }
     }
+
+    // logger.log(`编译 ${this.name}`);
   }
 
   async loadIfNeeded() {
@@ -272,7 +257,7 @@ export default class Asset {
 
     const alias = this.options.alias;
     const sourceDir = path.resolve(this.options.sourceDir);
-    const name = sourcePath;
+    const name = pathToUnixType(sourcePath);
     let distPath = '';
 
     const aliasDirs = [...Object.entries(alias)];
@@ -281,7 +266,9 @@ export default class Asset {
       const [aliasName, aliasValue] = aliasDirs.shift();
       const normalizedAlias = normalizeAlias(aliasValue);
       const dir = normalizedAlias.path;
-      const distDir = normalizedAlias.dist ? normalizedAlias.dist : 'npm';
+      const distDir = normalizedAlias.dist
+        ? normalizedAlias.dist
+        : DEFAULT_NPM_DIR;
       // in alias source dir but not in build source file
       if (name.includes(sourceDir)) {
         const relatePath = path.relative(sourceDir, name);
@@ -302,13 +289,19 @@ export default class Asset {
       }
     }
 
+    // fix style
+    distPath = pathToUnixType(distPath);
+
+    /**
+     * node_modules/npm => npm
+     */
     if (
-      (!distPath && name.includes(NODE_MODULES)) ||
-      distPath.includes(NODE_MODULES)
+      (!distPath && name.match(REG_NODE_MODULES)) ||
+      distPath.match(REG_NODE_MODULES)
     ) {
-      const spNM = name.split(NODE_MODULES);
+      const spNM = name.split(REG_NODE_MODULES);
       const relativeAlias = spNM.pop();
-      distPath = path.join(this.options.outDir, 'npm', relativeAlias);
+      distPath = path.join(this.options.outDir, DEFAULT_NPM_DIR, relativeAlias);
     }
 
     if (!distPath) {

@@ -4,7 +4,7 @@ import * as fsExtra from 'fs-extra';
 import * as path from 'path';
 import { promisify } from 'util';
 import { IAliasValue, IInitOptions } from '../typings/jgb-shared';
-import { normalizeAlias } from './utils';
+import { normalizeAlias, pathToUnixType } from './utils';
 
 // debug.enable('*');
 
@@ -312,24 +312,32 @@ export default class Resolver {
     // Load the local package, and resolve aliases
     const pkg = await this.findPackage(dir);
     return (
-      (await this.loadResolveAlias(fileName, dir)) ||
-      this.resolveAliases(fileName, pkg)
+      this.loadResolveAlias(fileName) || this.resolveAliases(fileName, pkg)
     );
   }
 
-  async loadResolveAlias(fileName: string, dir: string) {
+  /**
+   * resolve alias get relativepath
+   * @param fileName
+   * @param dir 如果有dir则返回相对路径，否则返回绝对路径
+   * @example
+   *  @/utils/index => ../utils/index
+   */
+  loadResolveAlias(fileName: string, dir?: string) {
+    fileName = pathToUnixType(fileName);
     for (const key of this.alias.keys()) {
-      if (fileName.startsWith(key)) {
+      if (fileName.includes(key)) {
         const target = this.alias.get(key);
-        /**
-         * @src: path.resolve('src')
-         *
-         * @src/abc => /src/abc
-         */
-        fileName = fileName.replace(key, normalizeAlias(target).path);
-        return this.resolveFilename(fileName, dir);
+        const normalizedAlias = normalizeAlias(target);
+        fileName = fileName.replace(key, normalizedAlias.path);
+        if (dir) {
+          const relativePath = path.relative(dir, fileName);
+          return pathToUnixType(relativePath);
+        }
+        return fileName;
       }
     }
+    return;
   }
 
   resolveAliases(fileName: string, pkg: any) {
